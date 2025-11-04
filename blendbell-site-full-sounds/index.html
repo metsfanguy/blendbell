@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BlendBell Timer</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: sans-serif;
+      }
+      #setup,
+      #run {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        text-align: center;
+      }
+      #run {
+        display: none;
+        position: relative;
+        width: 100%;
+      }
+      #runBar {
+        position: absolute;
+        top: 0;
+        right: 0;
+        padding: 10px;
+        display: none;
+        z-index: 2;
+      }
+      #runBar button {
+        font-size: 18px;
+        padding: 8px 14px;
+      }
+      .field {
+        margin: 10px 0;
+      }
+      label {
+        display: block;
+        margin-bottom: 4px;
+      }
+      input[type="number"],
+      input[type="color"],
+      select {
+        font-size: 16px;
+        padding: 4px;
+        margin-bottom: 8px;
+      }
+      button {
+        font-size: 18px;
+        padding: 8px 16px;
+        margin: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="setup">
+      <h1>BlendBell Timer</h1>
+      <div class="field">
+        <label for="duration">Duration (seconds)</label>
+        <input id="duration" type="number" min="1" value="10" />
+      </div>
+      <div class="field">
+        <label for="startColor">Start Color</label>
+        <input id="startColor" type="color" value="#0000ff" />
+      </div>
+      <div class="field">
+        <label for="endColor">End Color</label>
+        <input id="endColor" type="color" value="#ff0000" />
+      </div>
+      <div class="field">
+        <label for="builtin">Built‑in sound</label>
+        <select id="builtin">
+          <option value="">None (upload)</option>
+          <option value="sounds/level_up_chime.wav">Level Up Chime</option>
+          <option value="sounds/8bit_countdown.wav">8‑bit Countdown</option>
+          <option value="sounds/achievement_unlocked.wav">Achievement Unlocked</option>
+          <option value="sounds/ocean_wave_crash.wav">Ocean Wave Crash</option>
+          <option value="sounds/bird_chirp.wav">Bird Chirp Burst</option>
+          <option value="sounds/wind_chime_twinkle.wav">Wind Chime Twinkle</option>
+          <option value="sounds/quack.wav">Quack</option>
+          <option value="sounds/ta_da_trumpet.wav">Ta‑da Trumpet</option>
+          <option value="sounds/cartoon_boing.wav">Cartoon Boing</option>
+          <option value="sounds/spaceship_warp.wav">Spaceship Warp</option>
+          <option value="sounds/laser_zap.wav">Laser Zap</option>
+          <option value="sounds/ai_voice_beep.wav">AI Voice Beep</option>
+          <option value="sounds/cheer_applause.wav">Cheer Applause</option>
+          <option value="sounds/soft_gong.wav">Soft Gong</option>
+          <option value="sounds/lofi_beat.wav">Lo‑fi Beat</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="file">Upload sound</label>
+        <input
+          id="file"
+          type="file"
+          accept="audio/*,.wav,.mp3"
+        />
+      </div>
+      <button id="startBtn">Start</button>
+    </div>
+    <div id="run" tabindex="0">
+      <div id="runBar"><button id="dismissBtn">Dismiss</button></div>
+      <audio id="player" preload="auto" loop playsinline></audio>
+    </div>
+    <script>
+      (() => {
+        const startBtn = document.getElementById('startBtn');
+        const durationInput = document.getElementById('duration');
+        const startColorInput = document.getElementById('startColor');
+        const endColorInput = document.getElementById('endColor');
+        const builtinSelect = document.getElementById('builtin');
+        const fileInput = document.getElementById('file');
+        const setup = document.getElementById('setup');
+        const runLayer = document.getElementById('run');
+        const runBar = document.getElementById('runBar');
+        const dismissBtn = document.getElementById('dismissBtn');
+        const player = document.getElementById('player');
+        let duration = 0,
+          startHex,
+          endHex,
+          startTime,
+          endTime,
+          animationId;
+        let paused = false,
+          finished = false;
+        let blinkInterval = null,
+          blinkToggle = false;
+        let wakeLock = null;
+        let clickUnlockFn = null;
+
+        async function requestWake() {
+          try {
+            if ('wakeLock' in navigator) {
+              wakeLock = await navigator.wakeLock.request('screen');
+            }
+          } catch (e) {
+            console.log('Wake lock error', e);
+          }
+        }
+        async function releaseWake() {
+          try {
+            if (wakeLock) {
+              await wakeLock.release();
+              wakeLock = null;
+            }
+          } catch (e) {}
+        }
+
+        function hexToRgb(hex) {
+          hex = hex.replace('#', '');
+          const bigint = parseInt(hex, 16);
+          return {
+            r: (bigint >> 16) & 255,
+            g: (bigint >> 8) & 255,
+            b: bigint & 255,
+          };
+        }
+        function rgbToHex(r, g, b) {
+          return (
+            '#' +
+            [r, g, b]
+              .map((x) => {
+                const h = x.toString(16);
+                return h.length === 1 ? '0' + h : h;
+              })
+              .join('')
+          );
+        }
+        function lerp(a, b, t) {
+          return a + (b - a) * t;
+        }
+
+        startBtn.onclick = async () => {
+          duration = parseFloat(durationInput.value);
+          if (!duration || duration <= 0) {
+            alert('Invalid duration');
+            return;
+          }
+          startHex = startColorInput.value;
+          endHex = endColorInput.value;
+          const builtinVal = builtinSelect.value;
+          const fileObj = fileInput.files[0];
+          if (builtinVal) {
+            player.src = builtinVal;
+          } else if (fileObj) {
+            player.src = URL.createObjectURL(fileObj);
+          } else {
+            player.src = '';
+          }
+          player.load();
+          player.loop = true;
+          // Pre‑warm audio
+          try {
+            await player.play();
+            await player.pause();
+            player.currentTime = 0;
+          } catch (e) {
+            // ignore
+          }
+          finished = false;
+          paused = false;
+          startTime = Date.now();
+          endTime = startTime + duration * 1000;
+          setup.style.display = 'none';
+          runLayer.style.display = 'flex';
+          runBar.style.display = 'none';
+          runLayer.style.background = startHex;
+          await requestWake();
+          animate();
+        };
+
+        function animate() {
+          if (paused || finished) return;
+          const now = Date.now();
+          const t = Math.min(1, (now - startTime) / (duration * 1000));
+          const startRgb = hexToRgb(startHex);
+          const endRgb = hexToRgb(endHex);
+          const r = Math.round(lerp(startRgb.r, endRgb.r, t));
+          const g = Math.round(lerp(startRgb.g, endRgb.g, t));
+          const b = Math.round(lerp(startRgb.b, endRgb.b, t));
+          runLayer.style.background = rgbToHex(r, g, b);
+          if (t >= 1) {
+            finish();
+            return;
+          }
+          animationId = requestAnimationFrame(animate);
+        }
+
+        function finish() {
+          finished = true;
+          runBar.style.display = 'block';
+          const tryStart = async () => {
+            try {
+              await player.play();
+              if (clickUnlockFn) {
+                runLayer.removeEventListener('click', clickUnlockFn);
+                clickUnlockFn = null;
+              }
+            } catch (e) {
+              if (!clickUnlockFn) {
+                alert('Tap the screen to enable sound');
+                clickUnlockFn = async () => {
+                  try {
+                    await player.play();
+                  } catch {}
+                };
+                runLayer.addEventListener('click', clickUnlockFn);
+              }
+            }
+          };
+          tryStart();
+          clearInterval(blinkInterval);
+          blinkToggle = false;
+          blinkInterval = setInterval(() => {
+            blinkToggle = !blinkToggle;
+            runLayer.style.background = blinkToggle ? '#000000' : endHex;
+          }, 300);
+        }
+
+        dismissBtn.onclick = () => {
+          if (!finished) return;
+          if (animationId) cancelAnimationFrame(animationId);
+          clearInterval(blinkInterval);
+          blinkInterval = null;
+          player.pause();
+          player.currentTime = 0;
+          releaseWake();
+          setup.style.display = 'flex';
+          runLayer.style.display = 'none';
+        };
+
+        runLayer.addEventListener('click', () => {
+          if (finished) {
+            dismissBtn.onclick();
+          } else {
+            paused = !paused;
+            if (!paused) {
+              const now = Date.now();
+              const elapsed = now - startTime;
+              startTime = now - elapsed;
+              endTime = startTime + duration * 1000;
+              animate();
+            } else {
+              if (animationId) cancelAnimationFrame(animationId);
+            }
+          }
+        });
+
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden && finished) {
+            player.play().catch(() => {});
+          }
+          if (!document.hidden && wakeLock === null && !finished) {
+            requestWake().catch(() => {});
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
